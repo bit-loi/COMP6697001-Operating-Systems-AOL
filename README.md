@@ -2,7 +2,7 @@
 
 A C project for simulating a time-sharing system using processes, signals, and timers. The planned design uses Round Robin scheduling to give each child process a turn to run for a fixed time quantum.
 
-Developed for the **COMP6697001 — Operating Systems** AOL Case Study at **BINUS University**, academic year **2026–2027, Semester 1**.
+Developed for the **COMP6697001 — Operating Systems** AOL Case Study at **BINUS University**, academic year **2026–2027**.
 
 ## Project Status
 
