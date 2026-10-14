@@ -3,6 +3,7 @@
 #include <errno.h>
 #include <stdio.h>
 #include <sys/wait.h>
+#include <time.h>
 
 /* Mark the current quantum as expired; Timer_wait calls this outside signal context. */
 static void quantum_finished(Timer *timer, void *context)
@@ -13,8 +14,17 @@ static void quantum_finished(Timer *timer, void *context)
 }
 
 /* Print a reaped child's exit code or the signal that terminated it. */
-static void report_completion(const Process *process)
+static void report_completion(const Scheduler *self, const Process *process)
 {
+    if (!Process_succeeded(process)) {
+        fprintf(stderr, "Error: P%d failed (%s=%d).\n", process->id,
+                WIFEXITED(process->wait_status) ? "exit code" : "signal",
+                WIFEXITED(process->wait_status) ? WEXITSTATUS(process->wait_status)
+                                               : WTERMSIG(process->wait_status));
+    }
+    if (!self->verbose) {
+        return;
+    }
     if (WIFEXITED(process->wait_status)) {
         printf("EXIT P%d pid=%ld code=%d\n", process->id, (long)process->pid,
                WEXITSTATUS(process->wait_status));
@@ -34,7 +44,7 @@ static int refresh_all(Scheduler *self)
             return -1;
         }
         if (previous != PROCESS_FINISHED && process->state == PROCESS_FINISHED) {
-            report_completion(process);
+            report_completion(self, process);
         }
     }
     return 0;
@@ -84,19 +94,25 @@ int Scheduler_select_next(Scheduler *self, int last_index)
 int Scheduler_run(Scheduler *self)
 {
     int last_index = -1;
-    int failed = 0;
+    struct timespec start;
+    struct timespec end;
     if (self == NULL || !self->initialized || self->started || self->select_next == NULL) {
         errno = EINVAL;
         return -1;
     }
     self->started = 1;
+    if (clock_gettime(CLOCK_MONOTONIC, &start) < 0) {
+        return -1;
+    }
     for (int i = 0; i < self->process_count; ++i) {
         Process *process = &self->processes[i];
         if (Process_start(process, &self->timer.original_mask) < 0) {
             return -1;
         }
-        printf("CREATE P%d pid=%ld burst_ms=%d state=STOPPED\n",
-               process->id, (long)process->pid, process->burst_ms);
+        if (self->verbose) {
+            printf("CREATE P%d pid=%ld state=STOPPED\n",
+                   process->id, (long)process->pid);
+        }
     }
     for (;;) {
         int next;
@@ -114,10 +130,13 @@ int Scheduler_run(Scheduler *self)
         }
         active = &self->processes[next];
         self->quantum_expired = 0;
-        printf("RUN P%d pid=%ld\n", active->id, (long)active->pid);
         if (Timer_start(&self->timer, self->quantum_ms) < 0 ||
             Process_resume(active) < 0) {
             return -1;
+        }
+        ++active->dispatches;
+        if (self->verbose) {
+            printf("RUN P%d pid=%ld\n", active->id, (long)active->pid);
         }
         while (active->state == PROCESS_RUNNING && !self->quantum_expired) {
             if (Timer_wait(&self->timer) < 0) {
@@ -139,20 +158,62 @@ int Scheduler_run(Scheduler *self)
                 return -1;
             }
             if (active->state == PROCESS_FINISHED) {
-                report_completion(active);
+                report_completion(self, active);
             } else {
-                printf("PAUSE P%d reason=quantum\n", active->id);
+                ++active->preemptions;
+                if (self->verbose) {
+                    printf("PAUSE P%d reason=quantum\n", active->id);
+                }
             }
         }
         last_index = next;
     }
     for (int i = 0; i < self->process_count; ++i) {
-        if (!Process_succeeded(&self->processes[i])) {
-            ++failed;
+        const Process *process = &self->processes[i];
+        self->stats.dispatches += process->dispatches;
+        self->stats.preemptions += process->preemptions;
+        if (Process_succeeded(process)) {
+            ++self->stats.completed;
+        } else {
+            ++self->stats.failed;
         }
     }
-    printf("DONE completed=%d failed=%d\n", self->process_count, failed);
-    return failed == 0 ? 0 : 1;
+    if (clock_gettime(CLOCK_MONOTONIC, &end) < 0) {
+        return -1;
+    }
+    self->stats.elapsed_ms = (double)(end.tv_sec - start.tv_sec) * 1000.0 +
+                             (double)(end.tv_nsec - start.tv_nsec) / 1000000.0;
+    return self->stats.failed == 0 ? 0 : 1;
+}
+
+/* Display measured counts; CPU targets are configured work, not wall durations. */
+void Scheduler_print_summary(const Scheduler *self)
+{
+    puts("\n================================================");
+    puts("           ROUND ROBIN SIMULATION RESULT");
+    puts("================================================");
+    printf("Policy          : Round Robin\n");
+    printf("Time Quantum    : %d ms\n", self->quantum_ms);
+    printf("Total Processes : %d\n\n", self->process_count);
+    puts("PROCESS SUMMARY");
+    puts("------------------------------------------------");
+    printf("%-7s  %-7s  %10s  %11s  %s\n", "Process", "Target",
+           "Dispatches", "Preemptions", "Status");
+    for (int i = 0; i < self->process_count; ++i) {
+        const Process *process = &self->processes[i];
+        char label[16];
+        (void)snprintf(label, sizeof label, "P%d", process->id);
+        printf("%-7s  %4d ms  %10lu  %11lu  %s\n", label, process->burst_ms,
+               process->dispatches, process->preemptions,
+               Process_succeeded(process) ? "DONE" : "FAILED");
+    }
+    puts("------------------------------------------------");
+    printf("Total Dispatches  : %lu\n", self->stats.dispatches);
+    printf("Total Preemptions : %lu\n", self->stats.preemptions);
+    printf("Completed         : %d\n", self->stats.completed);
+    printf("Failed            : %d\n", self->stats.failed);
+    printf("Elapsed Time      : %.3f ms (wall clock)\n", self->stats.elapsed_ms);
+    puts("================================================");
 }
 
 /* Stop scheduling, kill and reap remaining children, and restore the timer's signals. */

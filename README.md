@@ -83,6 +83,21 @@ sudo apt install build-essential python3
 If `./timeshare` reports `No such file or directory`, check that you are in the
 project directory and that `make` completed successfully.
 
+### Build results are ignored by Git
+
+`.gitignore` excludes everything `make` produces, so `git status` stays clean
+after compiling:
+
+```gitignore
+timeshare
+*.o
+*.d
+```
+
+Only the source files (`*.c`, `*.h`, `Makefile`, `README.md`, `.gitignore`) are
+tracked. Delete the build results with `make clean` if you want the working
+tree to be completely empty of generated files.
+
 ### Run directly from PowerShell
 
 From PowerShell in this repository, run the Linux commands through WSL:

@@ -24,6 +24,8 @@ struct Process {
     int burst_ms;                 /* CPU time requested by the default worker. */
     ProcessState state;           /* Lifecycle state known to this object. */
     int wait_status;              /* Most recent raw status returned by waitpid. */
+    unsigned long dispatches;     /* Successful scheduler-issued SIGCONT requests. */
+    unsigned long preemptions;    /* Quantum expirations followed by a confirmed stop. */
     ProcessWorkerFn worker;       /* Callback executed in the child process. */
 };
 
